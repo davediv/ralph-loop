@@ -133,7 +133,7 @@ while [[ $ITERATION -lt $MAX_ITERATIONS ]]; do
   echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
 
   # Build claude command args
-  CLAUDE_ARGS=(-p "$PROMPT" --output-format text)
+  CLAUDE_ARGS=(-p "$PROMPT")
 
   # Continue session after first iteration for context continuity
   if [[ "$SESSION_MODE" == "continue" && -n "$SESSION_ID" ]]; then
@@ -144,11 +144,12 @@ while [[ $ITERATION -lt $MAX_ITERATIONS ]]; do
   ITER_LOG="${LOG_DIR}/iter_${TIMESTAMP}_${ITERATION}.log"
 
   if [[ "$LIVE" == true ]]; then
-    # Stream to terminal in real time AND capture to file
-    claude --dangerously-skip-permissions "${CLAUDE_ARGS[@]}" 2>&1 | tee "$ITER_LOG" || true
+    # Claude's text output format is buffered in print mode.
+    # stream-json emits events as they happen, which enables true live output.
+    claude --dangerously-skip-permissions --verbose "${CLAUDE_ARGS[@]}" --output-format stream-json --include-partial-messages 2>&1 | tee "$ITER_LOG" || true
     RESPONSE="$(cat "$ITER_LOG")"
   else
-    RESPONSE="$(claude --dangerously-skip-permissions "${CLAUDE_ARGS[@]}" 2>&1)" || true
+    RESPONSE="$(claude --dangerously-skip-permissions "${CLAUDE_ARGS[@]}" --output-format text 2>&1)" || true
     echo "$RESPONSE" > "$ITER_LOG"
     # Show a truncated preview
     PREVIEW="$(echo "$RESPONSE" | tail -20)"
@@ -165,7 +166,7 @@ while [[ $ITERATION -lt $MAX_ITERATIONS ]]; do
   # Capture session ID from first run for continuity (only in continue mode)
   if [[ "$SESSION_MODE" == "continue" && $ITERATION -eq 1 && -z "$SESSION_ID" ]]; then
     # Try to extract session ID if claude outputs one
-    MAYBE_SESSION="$(echo "$RESPONSE" | grep -oP 'session[_-]?id[:\s]*\K[a-zA-Z0-9_-]+' || true)"
+    MAYBE_SESSION="$(echo "$RESPONSE" | grep -oE 'session[_-]?id["[:space:]]*[:=]["[:space:]]*[a-zA-Z0-9_-]+' | head -n1 | sed -E 's/.*[:=]["[:space:]]*//' || true)"
     if [[ -n "$MAYBE_SESSION" ]]; then
       SESSION_ID="$MAYBE_SESSION"
       echo -e "  ${GREEN}📎 Session: ${SESSION_ID}${RESET}"
