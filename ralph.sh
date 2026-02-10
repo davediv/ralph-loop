@@ -26,6 +26,35 @@ SESSION_MODE="clean"  # "continue" = resume session, "clean" = fresh context eac
 SESSION_ID=""
 COOLDOWN=3  # seconds between iterations
 
+# jq filter to render stream-json events in a readable live format.
+# Raw stream lines are still written to iteration logs.
+LIVE_STREAM_FILTER="$(cat <<'JQ'
+def clean: gsub("\r?\n+"; " ") | gsub(" +"; " ");
+def clip($n): if length > $n then .[0:$n] + "..." else . end;
+. as $raw
+| (fromjson? // {"type":"raw","raw":$raw})
+| if .type == "assistant" then
+    .message.content[]?
+    | if .type == "text" then
+        (.text // "" | clean | clip(240) | select(length > 0) | "[assistant] " + .)
+      elif .type == "tool_use" then
+        "[tool] " + (.name // "unknown") + " " + ((.input // {} | tojson | clean | clip(180)))
+      else empty end
+  elif .type == "user" then
+    .message.content[]?
+    | select(.type == "tool_result")
+    | (.content // "" | tostring | clean | clip(240) | select(length > 0) | "[tool-result] " + .)
+  elif .type == "result" then
+    "[result] " + ((.result // "" | clean | clip(240)))
+    + (if .total_cost_usd? then " | cost=$" + (.total_cost_usd | tostring) else "" end)
+  elif .type == "raw" then
+    (.raw | clean | select(length > 0) | "[raw] " + .)
+  else
+    empty
+  end
+JQ
+)"
+
 # ── Colors ───────────────────────────────────────────────────
 RED='\033[0;31m'
 LIGHTRED='\033[1;31m'
@@ -144,9 +173,15 @@ while [[ $ITERATION -lt $MAX_ITERATIONS ]]; do
   ITER_LOG="${LOG_DIR}/iter_${TIMESTAMP}_${ITERATION}.log"
 
   if [[ "$LIVE" == true ]]; then
-    # Claude's text output format is buffered in print mode.
-    # stream-json emits events as they happen, which enables true live output.
-    claude --dangerously-skip-permissions --verbose "${CLAUDE_ARGS[@]}" --output-format stream-json --include-partial-messages 2>&1 | tee "$ITER_LOG" || true
+    # stream-json enables true live updates; jq formats events for readability.
+    if command -v jq &>/dev/null; then
+      claude --dangerously-skip-permissions --verbose "${CLAUDE_ARGS[@]}" --output-format stream-json --include-partial-messages 2>&1 \
+        | tee "$ITER_LOG" \
+        | jq --unbuffered -Rr "$LIVE_STREAM_FILTER" || true
+    else
+      echo -e "${YELLOW}Warning:${RESET} jq not found. Showing raw live JSON stream."
+      claude --dangerously-skip-permissions --verbose "${CLAUDE_ARGS[@]}" --output-format stream-json --include-partial-messages 2>&1 | tee "$ITER_LOG" || true
+    fi
     RESPONSE="$(cat "$ITER_LOG")"
   else
     RESPONSE="$(claude --dangerously-skip-permissions "${CLAUDE_ARGS[@]}" --output-format text 2>&1)" || true
