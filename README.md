@@ -82,7 +82,11 @@ Each iteration sees the codebase as Claude left it in the prior pass. Failures b
 | `--promise TEXT` | Completion signal to watch for | `<promise>COMPLETE</promise>` |
 | `--cooldown N` | Seconds to wait between iterations | `3` |
 | `--session MODE` | Session mode: `clean` or `continue` | `clean` |
-| `--live` | Stream Claude's output to terminal in real time | `false` |
+| `--live` | Stream Claude's output to terminal in real time | `true` |
+| `--no-live` | Disable live stream output (text mode preview) | `false` |
+| `--idle-timeout N` | Live mode inactivity timeout (seconds without new output) | `600` |
+| `--hard-timeout N` | No-live mode hard timeout (max seconds per iteration) | `1800` |
+| `--kill-grace N` | Grace period between `TERM` and `KILL` when stopping stuck processes | `5` |
 | `-h, --help` | Show help message | — |
 
 ### Examples
@@ -93,6 +97,9 @@ Each iteration sees the codebase as Claude left it in the prior pass. Failures b
 
 # Watch Claude work in real time
 ./ralph.sh --live
+
+# Disable live stream output (non-live text mode)
+./ralph.sh --no-live
 
 # Long-running task with more iterations
 ./ralph.sh --max 50 --live
@@ -108,6 +115,12 @@ Each iteration sees the codebase as Claude left it in the prior pass. Failures b
 
 # Combine options
 ./ralph.sh --max 50 --session continue --live --cooldown 5
+
+# Tighten hang detection while debugging a flaky prompt
+./ralph.sh --live --idle-timeout 120 --kill-grace 3
+
+# No-live mode with a stricter wall-clock cap
+./ralph.sh --no-live --hard-timeout 900
 ```
 
 ## Session Modes
@@ -197,7 +210,9 @@ Use logs to review what Claude did across iterations, debug convergence issues, 
 ## Safety
 
 - **Iteration cap** — `--max` prevents runaway loops (default: 30). Always set a reasonable limit.
-- **Ctrl+C** — Graceful exit at any point. Logs are preserved.
+- **Ctrl+C** — Deterministic interrupt handling. Active Claude/tool processes are terminated, then Ralph exits with code `130`.
+- **Hang protection** — In `--live`, Ralph aborts the run if no new output arrives for `--idle-timeout` seconds (default: 600). In `--no-live`, each iteration has a hard wall-clock cap via `--hard-timeout` (default: 1800). Timeout exits use code `124`.
+- **Kill escalation** — Stuck processes receive `TERM`, then `KILL` after `--kill-grace` seconds (default: 5).
 - **`--dangerously-skip-permissions`** — The script runs Claude in unattended mode. Make sure you trust your prompt and run in a git-tracked directory so you can revert.
 - **Cost awareness** — Each iteration is an API call. A 30-iteration loop on a large codebase can cost $30–100+ depending on context size. Monitor your usage.
 
