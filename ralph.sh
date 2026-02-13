@@ -43,7 +43,7 @@ def clip($n): if length > $n then .[0:$n] + "..." else . end;
 | if .type == "assistant" then
     .message.content[]?
     | if .type == "text" then
-        (.text // "" | clean | clip(240) | select(length > 0) | "👽 " + .)
+        (.text // "" | clean | clip(240) | select(length > 0) | "👽 " + ($assistant_prefix_start + . + $assistant_prefix_end))
       elif .type == "tool_use" then
         "⚙️  " + (.name // "unknown") + " " + ((.input // {} | tojson | clean | clip(180)))
       else empty end
@@ -76,6 +76,8 @@ CYAN='\033[0;36m'
 LIGHTCYAN='\033[1;36m'
 BOLD='\033[1m'
 RESET='\033[0m'
+ASSISTANT_PREFIX_START="$(printf '\033[1;32m')"
+ASSISTANT_PREFIX_END="$(printf '\033[0m')"
 
 is_non_negative_int() {
   [[ "$1" =~ ^[0-9]+$ ]]
@@ -209,7 +211,10 @@ run_live_iteration() {
   mkfifo "${ACTIVE_RAW_FIFO}" "${ACTIVE_DISPLAY_FIFO}"
 
   if command -v jq &>/dev/null; then
-    jq --unbuffered -Rr "$LIVE_STREAM_FILTER" <"${ACTIVE_DISPLAY_FIFO}" &
+    jq --unbuffered -Rr \
+      --arg assistant_prefix_start "$ASSISTANT_PREFIX_START" \
+      --arg assistant_prefix_end "$ASSISTANT_PREFIX_END" \
+      "$LIVE_STREAM_FILTER" <"${ACTIVE_DISPLAY_FIFO}" &
   else
     echo -e "${YELLOW}Warning:${RESET} jq not found. Showing raw live JSON stream."
     cat <"${ACTIVE_DISPLAY_FIFO}" &
