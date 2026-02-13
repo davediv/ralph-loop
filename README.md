@@ -87,6 +87,7 @@ Each iteration sees the codebase as Claude left it in the prior pass. Failures b
 | `--idle-timeout N` | Live mode inactivity timeout (seconds without new output) | `600` |
 | `--hard-timeout N` | No-live mode hard timeout (max seconds per iteration) | `1800` |
 | `--kill-grace N` | Grace period between `TERM` and `KILL` when stopping stuck processes | `5` |
+| `--log-cleanup MODE` | Log cleanup policy: `success`, `none`, or `always` | `success` |
 | `-h, --help` | Show help message | — |
 
 ### Examples
@@ -121,6 +122,12 @@ Each iteration sees the codebase as Claude left it in the prior pass. Failures b
 
 # No-live mode with a stricter wall-clock cap
 ./ralph.sh --no-live --hard-timeout 900
+
+# Keep logs even on successful completion
+./ralph.sh --log-cleanup none
+
+# Always remove logs at terminal end (success/failure/interrupt)
+./ralph.sh --log-cleanup always
 ```
 
 ## Session Modes
@@ -184,7 +191,11 @@ Output <promise>COMPLETE</promise> when all phases are done.
 
 ## Logs
 
-All output is saved to the `.ralph/` directory:
+Ralph writes run/iteration logs to the `.ralph/` directory while it executes.  
+By default (`--log-cleanup success`), those logs are removed only after successful completion.  
+Use `--log-cleanup none` to always keep logs, or `--log-cleanup always` to always remove them.
+
+Log file layout:
 
 ```
 .ralph/
