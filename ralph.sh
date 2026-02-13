@@ -18,6 +18,7 @@ set -euo pipefail
 #    ./ralph.sh --idle-timeout 600   # live mode inactivity timeout (seconds)
 #    ./ralph.sh --hard-timeout 1800  # no-live mode hard timeout (seconds)
 #    ./ralph.sh --kill-grace 5       # seconds between TERM and KILL
+#    ./ralph.sh --log-cleanup success  # delete logs when run completes successfully
 # ──────────────────────────────────────────────────────────────
 
 # ── Defaults ─────────────────────────────────────────────────
@@ -32,6 +33,7 @@ COOLDOWN=3  # seconds between iterations
 LIVE_IDLE_TIMEOUT=600      # seconds with no output in live mode before abort
 NO_LIVE_HARD_TIMEOUT=1800  # max runtime per iteration in no-live mode
 KILL_GRACE=5               # seconds to wait between TERM and KILL
+LOG_CLEANUP_MODE="success" # "success" = clean logs on success, "none" = keep all, "always" = clean every terminal outcome
 
 # jq filter to render stream-json events in a readable live format.
 # Raw stream lines are still written to iteration logs.
@@ -124,6 +126,66 @@ cleanup_active_resources() {
   ACTIVE_RENDER_PID=""
   ACTIVE_RAW_FIFO=""
   ACTIVE_DISPLAY_FIFO=""
+}
+
+cleanup_logs() {
+  local project_dir
+  local log_dir_real
+  local before_bytes=0
+  local after_bytes=0
+  local reclaimed_bytes=0
+  local deleted_count=0
+  local pattern
+
+  if [[ ! -d "$LOG_DIR" ]]; then
+    return 0
+  fi
+
+  project_dir="$(pwd -P)"
+  log_dir_real="$(cd "$LOG_DIR" 2>/dev/null && pwd -P || true)"
+  if [[ -z "$log_dir_real" || "$log_dir_real" != "${project_dir}/.ralph" ]]; then
+    echo -e "${YELLOW}Warning:${RESET} Refusing log cleanup for unsafe LOG_DIR path: ${LOG_DIR}"
+    return 1
+  fi
+
+  before_bytes="$(du -sk "$log_dir_real" 2>/dev/null | awk '{print $1 * 1024}' || echo 0)"
+
+  for pattern in "run_*.log" "iter_*.log" "*.raw.fifo" "*.display.fifo"; do
+    while IFS= read -r target; do
+      [[ -z "$target" ]] && continue
+      rm -f -- "$target"
+      deleted_count=$((deleted_count + 1))
+    done < <(find "$log_dir_real" -maxdepth 1 \( -type f -o -type p \) -name "$pattern" -print 2>/dev/null)
+  done
+
+  after_bytes="$(du -sk "$log_dir_real" 2>/dev/null | awk '{print $1 * 1024}' || echo 0)"
+  if (( before_bytes > after_bytes )); then
+    reclaimed_bytes=$((before_bytes - after_bytes))
+  fi
+
+  echo -e "${LIGHTBLUE}🧹 Log cleanup:${RESET} mode=${LOG_CLEANUP_MODE}, removed=${deleted_count}, reclaimed=${reclaimed_bytes}B"
+  return 0
+}
+
+maybe_cleanup_logs() {
+  local outcome="$1"
+
+  case "$LOG_CLEANUP_MODE" in
+    none)
+      return 1
+      ;;
+    success)
+      [[ "$outcome" == "success" ]] || return 1
+      ;;
+    always)
+      ;;
+    *)
+      echo -e "${YELLOW}Warning:${RESET} Unknown --log-cleanup mode '${LOG_CLEANUP_MODE}', skipping cleanup."
+      return 1
+      ;;
+  esac
+
+  cleanup_logs
 }
 
 kill_descendants_signal() {
@@ -316,6 +378,13 @@ while [[ $# -gt 0 ]]; do
     --idle-timeout) LIVE_IDLE_TIMEOUT="$2"; shift 2 ;;
     --hard-timeout) NO_LIVE_HARD_TIMEOUT="$2"; shift 2 ;;
     --kill-grace) KILL_GRACE="$2"; shift 2 ;;
+    --log-cleanup)
+      if [[ "$2" == "none" || "$2" == "success" || "$2" == "always" ]]; then
+        LOG_CLEANUP_MODE="$2"
+      else
+        echo "Error: --log-cleanup must be 'none', 'success', or 'always'"; exit 1
+      fi
+      shift 2 ;;
     --session)
       if [[ "$2" == "continue" || "$2" == "clean" ]]; then
         SESSION_MODE="$2"
@@ -341,6 +410,7 @@ while [[ $# -gt 0 ]]; do
       echo "  --idle-timeout N  Live mode inactivity timeout in seconds (default: 600)"
       echo "  --hard-timeout N  No-live mode hard timeout in seconds (default: 1800)"
       echo "  --kill-grace N    Seconds to wait after TERM before KILL (default: 5)"
+      echo "  --log-cleanup MODE  Log cleanup policy: success|none|always (default: success)"
       echo "  -h, --help     Show this help message"
       exit 0
       ;;
@@ -393,6 +463,7 @@ echo -e "  ${LIGHTCYAN}Live:${RESET}       ${LIVE}"
 echo -e "  ${LIGHTCYAN}Idle timeout:${RESET} ${LIVE_IDLE_TIMEOUT}s (live mode)"
 echo -e "  ${LIGHTCYAN}Hard timeout:${RESET} ${NO_LIVE_HARD_TIMEOUT}s (no-live mode)"
 echo -e "  ${LIGHTCYAN}Kill grace:${RESET}  ${KILL_GRACE}s"
+echo -e "  ${LIGHTCYAN}Log cleanup:${RESET} ${LOG_CLEANUP_MODE}"
 echo ""
 
 # ── Trap Ctrl+C for clean exit ───────────────────────────────
@@ -400,8 +471,15 @@ cleanup() {
   echo ""
   terminate_active_iteration "Interrupted by signal"
   cleanup_active_resources
+  if maybe_cleanup_logs "signal"; then
+    echo -e "   ${LIGHTBLUE}🧹 Logs cleaned (${LOG_CLEANUP_MODE})${RESET}"
+  fi
   echo -e "${YELLOW}🚥 Ralph Loop interrupted at iteration ${ITERATION}/${MAX_ITERATIONS}${RESET}"
-  echo -e "   Log saved to: ${MAGENTA}${RUN_LOG}${RESET}"
+  if [[ "$LOG_CLEANUP_MODE" == "always" ]]; then
+    echo -e "   ${YELLOW}Log files removed by --log-cleanup always.${RESET}"
+  else
+    echo -e "   Log saved to: ${MAGENTA}${RUN_LOG}${RESET}"
+  fi
   exit 130
 }
 trap cleanup SIGINT SIGTERM
@@ -502,6 +580,12 @@ while [[ $ITERATION -lt $MAX_ITERATIONS ]]; do
 done
 
 # ── Summary ──────────────────────────────────────────────────
+if [[ "$COMPLETED" == true ]]; then
+  maybe_cleanup_logs "success" || true
+else
+  maybe_cleanup_logs "non-success" || true
+fi
+
 echo ""
 echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
 if [[ "$COMPLETED" == true ]]; then
@@ -514,6 +598,10 @@ else
   echo -e "  Tip: Increase --max or refine your prompt for convergence."
 fi
 echo -e "  ${BOLD}Iterations:${RESET}  ${ITERATION}"
-echo -e "  ${BOLD}Full log:${RESET}    ${RUN_LOG}"
+if [[ "$LOG_CLEANUP_MODE" == "always" || ( "$LOG_CLEANUP_MODE" == "success" && "$COMPLETED" == true ) ]]; then
+  echo -e "  ${BOLD}Full log:${RESET}    cleaned by --log-cleanup ${LOG_CLEANUP_MODE}"
+else
+  echo -e "  ${BOLD}Full log:${RESET}    ${RUN_LOG}"
+fi
 echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
 exit "$EXIT_CODE"
