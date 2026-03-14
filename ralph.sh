@@ -34,6 +34,7 @@ LIVE_IDLE_TIMEOUT=600      # seconds with no output in live mode before abort
 NO_LIVE_HARD_TIMEOUT=1800  # max runtime per iteration in no-live mode
 KILL_GRACE=5               # seconds to wait between TERM and KILL
 LOG_CLEANUP_MODE="success" # "success" = clean logs on success, "none" = keep all, "always" = clean every terminal outcome
+MODEL_PROVIDER=""  # empty = default claude
 
 # jq filter to render stream-json events in a readable live format.
 # Raw stream lines are still written to iteration logs.
@@ -108,6 +109,58 @@ file_size_bytes() {
   else
     echo 0
   fi
+}
+
+configure_model_env() {
+  if [[ -z "$MODEL_PROVIDER" ]]; then
+    return 0
+  fi
+
+  local base_url=""
+  local api_key_var=""
+  local model_id=""
+
+  case "$MODEL_PROVIDER" in
+    minimax)
+      base_url="https://api.minimax.io/anthropic"
+      api_key_var="MINIMAX_API_KEY"
+      model_id="MiniMax-M2.5"
+      ;;
+    kimi)
+      base_url="https://api.moonshot.ai/anthropic"
+      api_key_var="KIMI_API_KEY"
+      model_id="Kimi-K2.5"
+      ;;
+    qwen)
+      base_url="https://coding-intl.dashscope.aliyuncs.com/apps/anthropic"
+      api_key_var="QWEN_API_KEY"
+      model_id="qwen-max"
+      ;;
+    glm)
+      base_url="https://api.z.ai/api/anthropic"
+      api_key_var="GLM_API_KEY"
+      model_id="glm-5"
+      ;;
+    *)
+      echo -e "${RED}Error:${RESET} Unknown model provider: ${MODEL_PROVIDER}"
+      exit 1
+      ;;
+  esac
+
+  if [[ -z "${!api_key_var:-}" ]]; then
+    echo -e "${RED}Error:${RESET} ${api_key_var} is not set. Required for --model ${MODEL_PROVIDER}."
+    exit 1
+  fi
+
+  export ANTHROPIC_BASE_URL="$base_url"
+  export ANTHROPIC_AUTH_TOKEN="${!api_key_var}"
+  export API_TIMEOUT_MS=3000000
+  export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
+  export ANTHROPIC_MODEL="$model_id"
+  export ANTHROPIC_SMALL_FAST_MODEL="$model_id"
+  export ANTHROPIC_DEFAULT_SONNET_MODEL="$model_id"
+  export ANTHROPIC_DEFAULT_OPUS_MODEL="$model_id"
+  export ANTHROPIC_DEFAULT_HAIKU_MODEL="$model_id"
 }
 
 # Active process/FIFO state for the current iteration.
@@ -385,6 +438,13 @@ while [[ $# -gt 0 ]]; do
         echo "Error: --log-cleanup must be 'none', 'success', or 'always'"; exit 1
       fi
       shift 2 ;;
+    --model)
+      if [[ "$2" == "minimax" || "$2" == "kimi" || "$2" == "qwen" || "$2" == "glm" ]]; then
+        MODEL_PROVIDER="$2"
+      else
+        echo "Error: --model must be one of: minimax, kimi, qwen, glm"; exit 1
+      fi
+      shift 2 ;;
     --session)
       if [[ "$2" == "continue" || "$2" == "clean" ]]; then
         SESSION_MODE="$2"
@@ -411,6 +471,7 @@ while [[ $# -gt 0 ]]; do
       echo "  --hard-timeout N  No-live mode hard timeout in seconds (default: 1800)"
       echo "  --kill-grace N    Seconds to wait after TERM before KILL (default: 5)"
       echo "  --log-cleanup MODE  Log cleanup policy: success|none|always (default: success)"
+      echo "  --model NAME   Model provider: minimax, kimi, qwen, glm (default: claude)"
       echo "  -h, --help     Show this help message"
       exit 0
       ;;
@@ -442,6 +503,8 @@ if [[ -z "$PROMPT" ]]; then
   exit 1
 fi
 
+configure_model_env
+
 # ── Setup logging ────────────────────────────────────────────
 mkdir -p "$LOG_DIR"
 TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
@@ -463,6 +526,7 @@ echo -e "  ${LIGHTCYAN}Live:${RESET}       ${LIVE}"
 echo -e "  ${LIGHTCYAN}Idle timeout:${RESET} ${LIVE_IDLE_TIMEOUT}s (live mode)"
 echo -e "  ${LIGHTCYAN}Hard timeout:${RESET} ${NO_LIVE_HARD_TIMEOUT}s (no-live mode)"
 echo -e "  ${LIGHTCYAN}Kill grace:${RESET}  ${KILL_GRACE}s"
+echo -e "  ${LIGHTCYAN}Model:${RESET}       ${MODEL_PROVIDER:-default}"
 echo -e "  ${LIGHTCYAN}Log cleanup:${RESET} ${LOG_CLEANUP_MODE}"
 echo ""
 
